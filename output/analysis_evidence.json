@@ -1,0 +1,29 @@
+{
+  "segments": [
+    {
+      "id": "R1",
+      "start": 0.0,
+      "end": 6.2,
+      "duration": 6.2,
+      "frames": [
+        "output\\frames\\R1\\frame_01.jpg",
+        "output\\frames\\R1\\frame_02.jpg",
+        "output\\frames\\R1\\frame_03.jpg"
+      ],
+      "motion_score": 44.1575,
+      "motion_level": "high"
+    },
+    {
+      "id": "R2",
+      "start": 6.2,
+      "end": 12.566667,
+      "duration": 6.366667,
+      "frames": [
+        "output\\frames\\R2\\frame_01.jpg",
+        "output\\frames\\R2\\frame_02.jpg"
+      ],
+      "motion_score": 68.8713,
+      "motion_level": "high"
+    }
+  ]
+}

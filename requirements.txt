@@ -1,0 +1,10 @@
+streamlit
+google-genai
+moviepy
+opencv-python
+python-dotenv
+scikit-learn
+numpy
+pydantic
+scenedetect[opencv]
+google-adk
