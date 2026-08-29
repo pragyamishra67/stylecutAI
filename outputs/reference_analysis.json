@@ -1,0 +1,49 @@
+{
+  "video_path": "video.mp4",
+  "metadata": {
+    "duration_seconds": 12.699909,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "frame_count": 377,
+    "codec": "h264",
+    "pixel_format": "yuv420p"
+  },
+  "total_segments": 2,
+  "segments": [
+    {
+      "segment_id": "segment_001",
+      "start_time": 0.0,
+      "end_time": 6.2,
+      "duration": 6.2,
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "subject_motion": "smiling, making playful facial expressions, tilting head",
+      "editing_characteristics": [
+        "minimal_cutting"
+      ],
+      "transitions": [
+        "none"
+      ],
+      "description": "A young woman wearing glasses and a casual ribbed top makes playful faces, winks, and smiles at the camera in a selfie-style shot.",
+      "motion_score": 33.219
+    },
+    {
+      "segment_id": "segment_002",
+      "start_time": 6.2,
+      "end_time": 12.566666666666666,
+      "duration": 6.366666666666666,
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "subject_motion": "posing, smiling, gesturing with hand",
+      "editing_characteristics": [
+        "minimal_cutting"
+      ],
+      "transitions": [
+        "hard_cut"
+      ],
+      "description": "The woman transitions to a glamorous look, wearing traditional Indian attire, elegant makeup, and large ornate earrings, posing gracefully.",
+      "motion_score": 26.019
+    }
+  ]
+}

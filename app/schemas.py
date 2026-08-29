@@ -1,113 +1,163 @@
-from typing import Optional
-
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-class Motion(BaseModel):
-    camera: str = Field(
-        description=(
-            "Camera movement: static, pan, tilt, zoom_in, zoom_out, "
-            "tracking, handheld, orbit, or unknown."
-        )
+# ============================================================
+# VIDEO METADATA
+# ============================================================
+
+class VideoMetadata(BaseModel):
+    duration_seconds: float
+    width: int
+    height: int
+    fps: float
+    frame_count: int
+
+    codec: Optional[str] = None
+    pixel_format: Optional[str] = None
+
+
+# ============================================================
+# REPRESENTATIVE FRAME
+# ============================================================
+
+class RepresentativeFrame(BaseModel):
+    timestamp: float
+    path: str
+
+
+# ============================================================
+# REFERENCE SEGMENT
+# ============================================================
+
+class ReferenceSegment(BaseModel):
+
+    segment_id: str
+
+    start_time: float
+    end_time: float
+    duration: float
+
+    shot_type: str
+    camera_motion: str
+    subject_motion: str
+
+    editing_characteristics: List[str] = Field(
+        default_factory=list
     )
 
-    subject: Optional[str] = Field(
-        default=None,
-        description="Description of important subject movement."
+    transitions: List[str] = Field(
+        default_factory=list
     )
 
-    intensity: Optional[str] = Field(
-        default=None,
-        description=(
-            "Motion intensity: none, subtle, moderate, strong, "
-            "or unknown."
-        )
-    )
+    description: str
+
+    motion_score: Optional[float] = None
 
 
-class Editing(BaseModel):
-    speed: str = Field(
-        description=(
-            "Playback speed: normal, slow_motion, fast_motion, "
-            "or unknown."
-        )
-    )
-
-    effect: Optional[str] = Field(
-        default=None,
-        description=(
-            "Visible editing effect such as zoom, blur, flash, "
-            "fade, color change, or none."
-        )
-    )
-
-    crop_or_reframe: Optional[str] = Field(
-        default=None,
-        description=(
-            "Any visible crop, reframing, punch-in, or composition change."
-        )
-    )
-
-
-class Segment(BaseModel):
-    id: str = Field(
-        description="Segment ID such as R1, R2, R3."
-    )
-
-    start: float = Field(
-        description="Start timestamp in seconds."
-    )
-
-    end: float = Field(
-        description="End timestamp in seconds."
-    )
-
-    shot: str = Field(
-        description=(
-            "Shot type such as wide shot, medium shot, "
-            "close-up, extreme close-up, POV, or unknown."
-        )
-    )
-
-    motion: Motion
-
-    editing: Editing
-
-    description: str = Field(
-        description="Concise description of what happens in this segment."
-    )
-
-
-class Transition(BaseModel):
-    from_segment: str = Field(
-        description="ID of the segment before the transition."
-    )
-
-    to_segment: str = Field(
-        description="ID of the segment after the transition."
-    )
-
-    timestamp: float = Field(
-        description="Timestamp of the transition in seconds."
-    )
-
-    type: str = Field(
-        description=(
-            "Transition type such as hard_cut, crossfade, "
-            "fade_in, fade_out, wipe, dip_to_black, or unknown."
-        )
-    )
-
+# ============================================================
+# REFERENCE ANALYSIS
+# ============================================================
 
 class ReferenceAnalysis(BaseModel):
-    video_duration: float = Field(
-        description="Total video duration in seconds."
+
+    video_path: str
+
+    metadata: VideoMetadata
+
+    total_segments: int
+
+    segments: List[ReferenceSegment]
+
+
+# ============================================================
+# TARGET SEGMENT
+# ============================================================
+
+class TargetSegment(BaseModel):
+
+    segment_id: str
+
+    start_time: float
+    end_time: float
+    duration: float
+
+    shot_type: str
+    camera_motion: str
+    subject_motion: str
+
+    description: str
+
+    motion_score: Optional[float] = None
+
+
+# ============================================================
+# TARGET ANALYSIS
+# ============================================================
+
+class TargetAnalysis(BaseModel):
+
+    video_path: str
+
+    metadata: VideoMetadata
+
+    total_segments: int
+
+    segments: List[TargetSegment]
+
+
+# ============================================================
+# EDIT OPERATION
+# ============================================================
+
+class EditOperation(BaseModel):
+
+    operation: str
+
+    parameters: dict = Field(
+        default_factory=dict
     )
 
-    segments: list[Segment] = Field(
-        description="All detected segments in chronological order."
+
+# ============================================================
+# EDIT SPEC SEGMENT
+# ============================================================
+
+class EditSegment(BaseModel):
+
+    output_segment_id: str
+
+    source_segment_id: str
+
+    source_start: float
+    source_end: float
+
+    target_start: float
+    target_end: float
+
+    operations: List[EditOperation] = Field(
+        default_factory=list
     )
 
-    transitions: list[Transition] = Field(
-        description="Transitions between consecutive segments."
+    rationale: str
+
+
+# ============================================================
+# EDIT SPEC
+# ============================================================
+
+class EditSpec(BaseModel):
+
+    version: str = "1.0"
+
+    source_video: str
+
+    output_video: str
+
+    reference_style_summary: str
+
+    segments: List[EditSegment]
+
+    global_operations: List[EditOperation] = Field(
+        default_factory=list
     )

@@ -1,8 +1,10 @@
 import json
 import subprocess
 from pathlib import Path
+from typing import List, Dict, Any
 
 import cv2
+
 from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector
 
@@ -11,17 +13,27 @@ from scenedetect.detectors import ContentDetector
 # FFPROBE
 # ============================================================
 
-def get_video_metadata(video_path: str) -> dict:
-    """
-    Extract technical metadata from a video using FFprobe.
-    """
+def ffprobe_metadata(video_path: str) -> Dict[str, Any]:
 
     command = [
         "ffprobe",
         "-v",
         "error",
-        "-show_format",
-        "-show_streams",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        (
+            "stream="
+            "width,"
+            "height,"
+            "r_frame_rate,"
+            "avg_frame_rate,"
+            "nb_frames,"
+            "codec_name,"
+            "pix_fmt"
+        ),
+        "-show_entries",
+        "format=duration",
         "-of",
         "json",
         video_path,
@@ -36,51 +48,48 @@ def get_video_metadata(video_path: str) -> dict:
 
     data = json.loads(result.stdout)
 
-    video_stream = next(
-        stream
-        for stream in data["streams"]
-        if stream["codec_type"] == "video"
+    stream = data["streams"][0]
+    fmt = data["format"]
+
+    fps_value = (
+        stream.get("avg_frame_rate")
+        or stream.get("r_frame_rate")
+        or "0/1"
     )
 
-    # FPS can look like:
-    # 30/1
-    # 30000/1001
+    numerator, denominator = fps_value.split("/")
 
-    fps_string = video_stream.get("r_frame_rate", "0/1")
+    denominator = float(denominator)
 
-    numerator, denominator = map(
-        int,
-        fps_string.split("/")
+    fps = (
+        float(numerator) / denominator
+        if denominator != 0
+        else 0.0
     )
 
-    fps = numerator / denominator if denominator else 0
+    return {
+        "duration_seconds": float(
+            fmt.get("duration", 0)
+        ),
 
-    metadata = {
-        "duration": float(
-            data["format"].get("duration", 0)
+        "width": int(
+            stream.get("width", 0)
+        ),
+
+        "height": int(
+            stream.get("height", 0)
         ),
 
         "fps": fps,
 
-        "width": int(
-            video_stream.get("width", 0)
+        "frame_count": int(
+            stream.get("nb_frames") or 0
         ),
 
-        "height": int(
-            video_stream.get("height", 0)
-        ),
+        "codec": stream.get("codec_name"),
 
-        "video_codec": video_stream.get(
-            "codec_name"
-        ),
-
-        "has_audio": any(
-            stream.get("codec_type") == "audio"
-            for stream in data["streams"]
-        ),
+        "pixel_format": stream.get("pix_fmt"),
     }
-
-    return metadata
 
 
 # ============================================================
@@ -90,46 +99,67 @@ def get_video_metadata(video_path: str) -> dict:
 def detect_scenes(
     video_path: str,
     threshold: float = 27.0,
-) -> list[dict]:
-    """
-    Detect shot/scene boundaries using PySceneDetect.
-    """
+    min_scene_len: int = 15,
+) -> List[Dict[str, Any]]:
 
     video = open_video(video_path)
 
-    scene_manager = SceneManager()
+    manager = SceneManager()
 
-    scene_manager.add_detector(
-        ContentDetector(
-            threshold=threshold
-        )
+    detector = ContentDetector(
+        threshold=threshold,
+        min_scene_len=min_scene_len,
     )
 
-    scene_manager.detect_scenes(video)
+    manager.add_detector(detector)
 
-    scene_list = scene_manager.get_scene_list()
+    manager.detect_scenes(video)
+
+    scene_list = manager.get_scene_list()
 
     scenes = []
 
-    for index, (start, end) in enumerate(scene_list):
+    for index, (start, end) in enumerate(
+        scene_list,
+        start=1,
+    ):
+
+        start_seconds = start.get_seconds()
+        end_seconds = end.get_seconds()
 
         scenes.append(
             {
-                "id": f"R{index + 1}",
-
-                "start": round(
-                    start.get_seconds(),
-                    3
+                "segment_id": (
+                    f"segment_{index:03d}"
                 ),
 
-                "end": round(
-                    end.get_seconds(),
-                    3
+                "start_time": start_seconds,
+
+                "end_time": end_seconds,
+
+                "duration": (
+                    end_seconds - start_seconds
                 ),
+            }
+        )
 
-                "start_frame": start.get_frames(),
+    # No cuts = entire video is one segment.
+    if not scenes:
 
-                "end_frame": end.get_frames(),
+        metadata = ffprobe_metadata(
+            video_path
+        )
+
+        duration = metadata[
+            "duration_seconds"
+        ]
+
+        scenes.append(
+            {
+                "segment_id": "segment_001",
+                "start_time": 0.0,
+                "end_time": duration,
+                "duration": duration,
             }
         )
 
@@ -137,247 +167,226 @@ def detect_scenes(
 
 
 # ============================================================
-# OPENCV
+# OPENCV REPRESENTATIVE FRAMES
 # ============================================================
 
-def extract_frames(
+def extract_representative_frames(
     video_path: str,
-    scenes: list[dict],
     output_dir: str,
-    frames_per_scene: int = 5,
-) -> list[dict]:
-    """
-    Extract representative frames from every scene.
+    start_time: float,
+    end_time: float,
+    samples: int = 5,
+) -> List[Dict[str, Any]]:
 
-    These frames are useful for inspection and can later be
-    supplied to Gemini if you want more granular visual evidence.
-    """
-
-    output_path = Path(output_dir)
-    output_path.mkdir(
+    output_dir = Path(output_dir)
+    output_dir.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(
+        video_path
+    )
 
     if not cap.isOpened():
         raise RuntimeError(
-            f"Could not open video: {video_path}"
+            f"Cannot open {video_path}"
         )
 
-    fps = cap.get(
-        cv2.CAP_PROP_FPS
-    )
+    duration = end_time - start_time
 
-    if fps <= 0:
-        fps = 30.0
+    frames = []
 
-    extracted = []
+    for i in range(samples):
 
-    for scene in scenes:
-
-        scene_id = scene["id"]
-
-        scene_dir = (
-            output_path / scene_id
-        )
-
-        scene_dir.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        start = scene["start"]
-        end = scene["end"]
-
-        duration = end - start
-
-        if frames_per_scene == 1:
-
-            timestamps = [
-                start + duration / 2
-            ]
-
+        if samples == 1:
+            relative = duration / 2
         else:
-
-            timestamps = [
-                start
-                + duration * i / (frames_per_scene - 1)
-                for i in range(frames_per_scene)
-            ]
-
-        scene_frames = []
-
-        for index, timestamp in enumerate(
-            timestamps
-        ):
-
-            frame_number = int(
-                timestamp * fps
+            relative = (
+                duration * i /
+                (samples - 1)
             )
 
-            cap.set(
-                cv2.CAP_PROP_POS_FRAMES,
-                frame_number
-            )
+        timestamp = (
+            start_time + relative
+        )
 
-            success, frame = cap.read()
+        cap.set(
+            cv2.CAP_PROP_POS_MSEC,
+            timestamp * 1000,
+        )
 
-            if not success:
-                continue
+        success, frame = cap.read()
 
-            frame_path = (
-                scene_dir
-                / f"frame_{index + 1:02d}.jpg"
-            )
+        if not success:
+            continue
 
-            cv2.imwrite(
-                str(frame_path),
-                frame
-            )
+        output_path = (
+            output_dir /
+            f"{timestamp:.3f}.jpg"
+        )
 
-            scene_frames.append(
-                {
-                    "timestamp": round(
-                        timestamp,
-                        3
-                    ),
-                    "path": str(
-                        frame_path
-                    ),
-                }
-            )
+        cv2.imwrite(
+            str(output_path),
+            frame,
+        )
 
-        extracted.append(
+        frames.append(
             {
-                "scene_id": scene_id,
-                "frames": scene_frames,
+                "timestamp": timestamp,
+                "path": str(output_path),
             }
         )
 
     cap.release()
 
-    return extracted
+    return frames
 
 
 # ============================================================
 # OPENCV MOTION ANALYSIS
 # ============================================================
 
-def calculate_motion_metrics(
+def analyze_motion(
     video_path: str,
-    scenes: list[dict],
-) -> list[dict]:
-    """
-    Calculate a basic frame-difference motion score
-    for every detected scene.
+    start_time: float,
+    end_time: float,
+    samples: int = 20,
+) -> Dict[str, Any]:
 
-    This is NOT trying to understand camera movement.
-    It simply gives Gemini additional objective evidence
-    about how much visual change occurs within each segment.
-    """
-
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(
+        video_path
+    )
 
     if not cap.isOpened():
         raise RuntimeError(
-            f"Could not open video: {video_path}"
+            f"Cannot open {video_path}"
         )
 
-    fps = cap.get(
-        cv2.CAP_PROP_FPS
-    )
+    duration = end_time - start_time
 
-    if fps <= 0:
-        fps = 30.0
+    previous = None
+    scores = []
 
-    results = []
+    for i in range(samples):
 
-    for scene in scenes:
-
-        start_frame = int(
-            scene["start"] * fps
-        )
-
-        end_frame = int(
-            scene["end"] * fps
+        timestamp = (
+            start_time +
+            duration * i /
+            max(samples - 1, 1)
         )
 
         cap.set(
-            cv2.CAP_PROP_POS_FRAMES,
-            start_frame
+            cv2.CAP_PROP_POS_MSEC,
+            timestamp * 1000,
         )
 
-        previous_gray = None
+        success, frame = cap.read()
 
-        differences = []
+        if not success:
+            continue
 
-        for _ in range(
-            max(1, end_frame - start_frame)
-        ):
+        gray = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2GRAY,
+        )
 
-            success, frame = cap.read()
+        gray = cv2.resize(
+            gray,
+            (320, 180),
+        )
 
-            if not success:
-                break
+        if previous is not None:
 
-            gray = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2GRAY
-            )
-
-            # Resize to make this inexpensive.
-            gray = cv2.resize(
+            difference = cv2.absdiff(
+                previous,
                 gray,
-                (320, 180)
             )
 
-            if previous_gray is not None:
-
-                difference = cv2.absdiff(
-                    previous_gray,
-                    gray
-                )
-
-                score = float(
-                    difference.mean()
-                )
-
-                differences.append(score)
-
-            previous_gray = gray
-
-        if differences:
-
-            average_motion = (
-                sum(differences)
-                / len(differences)
+            scores.append(
+                float(difference.mean())
             )
 
-            maximum_motion = max(
-                differences
-            )
-
-        else:
-
-            average_motion = 0.0
-            maximum_motion = 0.0
-
-        results.append(
-            {
-                "scene_id": scene["id"],
-                "average_frame_difference": round(
-                    average_motion,
-                    3
-                ),
-                "maximum_frame_difference": round(
-                    maximum_motion,
-                    3
-                ),
-            }
-        )
+        previous = gray
 
     cap.release()
 
-    return results
+    if not scores:
+
+        return {
+            "motion_score": 0.0,
+            "motion_level": "unknown",
+        }
+
+    score = sum(scores) / len(scores)
+
+    if score < 3:
+        level = "very_low"
+    elif score < 8:
+        level = "low"
+    elif score < 15:
+        level = "medium"
+    elif score < 25:
+        level = "high"
+    else:
+        level = "very_high"
+
+    return {
+        "motion_score": round(score, 3),
+        "motion_level": level,
+    }
+
+
+# ============================================================
+# FFMPEG SEGMENT EXTRACTION
+# ============================================================
+
+def extract_segment(
+    video_path: str,
+    output_path: str,
+    start_time: float,
+    end_time: float,
+):
+
+    duration = end_time - start_time
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start_time),
+        "-i",
+        video_path,
+        "-t",
+        str(duration),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        output_path,
+    ]
+
+    subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+# ============================================================
+# FFMPEG RUN
+# ============================================================
+
+def run_ffmpeg(
+    command: List[str],
+):
+
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
