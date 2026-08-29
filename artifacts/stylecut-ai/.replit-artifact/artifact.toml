@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "StyleCut AI"
+description = "A premium frontend-only AI video editing workspace for content creators, with mock upload, style selection, AI customization, processing, project history, and result preview flows."
+version = "1.0.0"
+id = "artifacts/stylecut-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25759
+
+[services.development]
+run = "pnpm --filter @workspace/stylecut-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/stylecut-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/stylecut-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25759"
+BASE_PATH = "/"
