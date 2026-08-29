@@ -7,13 +7,19 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import requests
+
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from pydantic import ValidationError
 from scenedetect import ContentDetector, detect
 
-from app.schemas import ReferenceAnalysis
+from app.schemas import (
+    ReferenceAnalysis,
+    TargetAnalysis,
+    EditSpec,
+)
 
 
 # ============================================================
@@ -22,24 +28,37 @@ from app.schemas import ReferenceAnalysis
 
 load_dotenv()
 
-MODEL = os.getenv(
+GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-2.7-flash"
+    "gemini-2.5-flash"
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
 
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "http://localhost:11434"
+)
 
-# ============================================================
-# GEMINI CLIENT
-# ============================================================
+LLAMA_MODEL = os.getenv(
+    "LLAMA_MODEL",
+    "llama3.1:8b"
+)
+
 
 if not GEMINI_API_KEY:
     raise RuntimeError(
         "GEMINI_API_KEY was not found in .env"
     )
 
-client = genai.Client(
+
+# ============================================================
+# CLIENTS
+# ============================================================
+
+gemini_client = genai.Client(
     api_key=GEMINI_API_KEY
 )
 
@@ -49,9 +68,6 @@ client = genai.Client(
 # ============================================================
 
 def ensure_directory(path: Path) -> None:
-    """
-    Create a directory if it does not exist.
-    """
 
     path.mkdir(
         parents=True,
@@ -67,11 +83,9 @@ def get_video_metadata(
     video_path: str
 ) -> dict[str, Any]:
 
-    """
-    Extract technical video metadata using FFprobe.
-    """
-
-    print("\n[1/5] Running FFprobe...")
+    print(
+        f"\nRunning FFprobe: {video_path}"
+    )
 
     command = [
         "ffprobe",
@@ -79,11 +93,21 @@ def get_video_metadata(
         "error",
 
         "-show_entries",
-        "format=duration,format_name,size",
+        (
+            "format=duration,"
+            "format_name,size"
+        ),
 
         "-show_entries",
-        "stream=codec_name,codec_type,width,height,"
-        "r_frame_rate,avg_frame_rate,pix_fmt",
+        (
+            "stream=codec_name,"
+            "codec_type,"
+            "width,"
+            "height,"
+            "r_frame_rate,"
+            "avg_frame_rate,"
+            "pix_fmt"
+        ),
 
         "-of",
         "json",
@@ -104,7 +128,8 @@ def get_video_metadata(
 
         raise RuntimeError(
             "FFprobe was not found. "
-            "Install FFmpeg and add it to PATH."
+            "Make sure FFmpeg is installed "
+            "and added to PATH."
         )
 
     except subprocess.CalledProcessError as e:
@@ -113,13 +138,14 @@ def get_video_metadata(
             f"FFprobe failed:\n{e.stderr}"
         )
 
-    data = json.loads(result.stdout)
+    data = json.loads(
+        result.stdout
+    )
 
     duration = float(
-        data.get("format", {}).get(
-            "duration",
-            0
-        )
+        data
+        .get("format", {})
+        .get("duration", 0)
     )
 
     streams = data.get(
@@ -131,17 +157,10 @@ def get_video_metadata(
         (
             stream
             for stream in streams
-            if stream.get("codec_type") == "video"
+            if stream.get("codec_type")
+            == "video"
         ),
         {}
-    )
-
-    width = video_stream.get(
-        "width"
-    )
-
-    height = video_stream.get(
-        "height"
     )
 
     fps = parse_frame_rate(
@@ -154,73 +173,52 @@ def get_video_metadata(
     )
 
     metadata = {
+
         "duration": duration,
-        "width": width,
-        "height": height,
+
+        "width": video_stream.get(
+            "width"
+        ),
+
+        "height": video_stream.get(
+            "height"
+        ),
+
         "fps": fps,
+
         "codec": video_stream.get(
             "codec_name"
         ),
+
         "pixel_format": video_stream.get(
             "pix_fmt"
         ),
-        "format": data.get(
-            "format",
-            {}
-        ).get(
-            "format_name"
-        ),
-        "size_bytes": data.get(
-            "format",
-            {}
-        ).get(
-            "size"
-        )
+
+        "format": data
+        .get("format", {})
+        .get("format_name"),
+
+        "size_bytes": data
+        .get("format", {})
+        .get("size")
     }
-
-    print(
-        f"    Duration: {duration:.3f}s"
-    )
-
-    print(
-        f"    Resolution: "
-        f"{width}x{height}"
-    )
-
-    print(
-        f"    FPS: {fps:.3f}"
-    )
-
-    print(
-        f"    Codec: {metadata['codec']}"
-    )
 
     return metadata
 
 
-# ============================================================
-# FPS PARSER
-# ============================================================
-
 def parse_frame_rate(
     value: str | None
-) -> float:
-
-    """
-    Convert FFprobe frame-rate strings such as
-    '30000/1001' into a float.
-    """
+) -> float | None:
 
     if not value:
-        return 0.0
+        return None
 
     try:
 
         if "/" in value:
 
-            numerator, denominator = value.split(
-                "/",
-                1
+            numerator, denominator = (
+                value.split("/")
             )
 
             denominator = float(
@@ -228,12 +226,11 @@ def parse_frame_rate(
             )
 
             if denominator == 0:
-                return 0.0
+                return None
 
-            return (
-                float(numerator)
-                / denominator
-            )
+            return float(
+                numerator
+            ) / denominator
 
         return float(value)
 
@@ -242,7 +239,7 @@ def parse_frame_rate(
         ZeroDivisionError
     ):
 
-        return 0.0
+        return None
 
 
 # ============================================================
@@ -253,24 +250,15 @@ def detect_scenes(
     video_path: str
 ) -> list[dict[str, Any]]:
 
-    """
-    Detect shot/scene boundaries using PySceneDetect.
-
-    These timestamps are authoritative for the pipeline.
-    Gemini should NOT modify them.
-    """
-
     print(
-        "\n[2/5] Detecting scenes with PySceneDetect..."
+        "\nRunning PySceneDetect..."
     )
 
     scene_list = detect(
         video_path,
         ContentDetector(
-            threshold=27.0,
-            min_scene_len=15
-        ),
-        show_progress=True
+            threshold=27.0
+        )
     )
 
     scenes = []
@@ -283,68 +271,47 @@ def detect_scenes(
         start=1
     ):
 
-        start = start_time.get_seconds()
-        end = end_time.get_seconds()
+        scenes.append({
 
-        scenes.append(
-            {
-                "id": f"R{index}",
-                "start": round(
-                    start,
-                    6
-                ),
-                "end": round(
-                    end,
-                    6
-                )
-            }
-        )
+            "id": f"S{index:03d}",
+
+            "start": start_time.get_seconds(),
+
+            "end": end_time.get_seconds(),
+
+            "duration": (
+                end_time.get_seconds()
+                - start_time.get_seconds()
+            )
+        })
 
     print(
-        f"    Detected {len(scenes)} segments."
+        f"Detected {len(scenes)} scenes."
     )
-
-    for scene in scenes:
-
-        print(
-            f"    {scene['id']}: "
-            f"{scene['start']:.3f}s → "
-            f"{scene['end']:.3f}s"
-        )
 
     return scenes
 
 
 # ============================================================
-# OPENCV
+# OPENCV EVIDENCE
 # ============================================================
 
-def extract_scene_evidence(
+def extract_opencv_evidence(
     video_path: str,
     scenes: list[dict[str, Any]],
-    output_dir: Path,
-    fps: float
+    output_dir: str
 ) -> list[dict[str, Any]]:
 
-    """
-    Use OpenCV to:
-
-    1. Extract representative frames.
-    2. Calculate simple motion evidence.
-
-    Gemini receives the actual video separately.
-    These frames/metrics provide deterministic evidence
-    that can be stored alongside the analysis.
-    """
-
     print(
-        "\n[3/5] Extracting OpenCV evidence..."
+        "\nRunning OpenCV analysis..."
     )
 
-    frames_dir = output_dir / "frames"
+    output_path = Path(
+        output_dir
+    )
 
     ensure_directory(
-        frames_dir
+        output_path
     )
 
     cap = cv2.VideoCapture(
@@ -354,46 +321,45 @@ def extract_scene_evidence(
     if not cap.isOpened():
 
         raise RuntimeError(
-            "OpenCV could not open the video."
+            "OpenCV could not open video."
         )
 
     evidence = []
 
     for scene in scenes:
 
-        scene_id = scene["id"]
-
         start = scene["start"]
         end = scene["end"]
 
-        duration = max(
-            end - start,
-            0.001
-        )
+        duration = end - start
 
         timestamps = [
+
             start,
+
             start + duration * 0.5,
+
             max(
-                end - 0.001,
-                start
+                start,
+                end - 0.01
             )
         ]
-
-        scene_frame_dir = (
-            frames_dir / scene_id
-        )
-
-        ensure_directory(
-            scene_frame_dir
-        )
-
-        saved_frames = []
 
         previous_gray = None
         motion_values = []
 
-        for frame_index, timestamp in enumerate(
+        saved_frames = []
+
+        scene_dir = (
+            output_path
+            / scene["id"]
+        )
+
+        ensure_directory(
+            scene_dir
+        )
+
+        for frame_number, timestamp in enumerate(
             timestamps,
             start=1
         ):
@@ -408,18 +374,18 @@ def extract_scene_evidence(
             if not success:
                 continue
 
-            filename = (
-                scene_frame_dir
-                / f"frame_{frame_index:02d}.jpg"
+            frame_path = (
+                scene_dir
+                / f"frame_{frame_number:02d}.jpg"
             )
 
             cv2.imwrite(
-                str(filename),
+                str(frame_path),
                 frame
             )
 
             saved_frames.append(
-                str(filename)
+                str(frame_path)
             )
 
             gray = cv2.cvtColor(
@@ -434,55 +400,50 @@ def extract_scene_evidence(
                     gray
                 )
 
-                motion_score = float(
+                score = float(
                     diff.mean()
                 )
 
                 motion_values.append(
-                    motion_score
+                    score
                 )
 
             previous_gray = gray
 
-        average_motion = (
-            sum(motion_values)
-            / len(motion_values)
-            if motion_values
-            else 0.0
-        )
+        if motion_values:
 
-        if average_motion < 5:
-            motion_level = "low"
-
-        elif average_motion < 20:
-            motion_level = "moderate"
+            motion_score = sum(
+                motion_values
+            ) / len(motion_values)
 
         else:
+
+            motion_score = 0.0
+
+        if motion_score < 5:
+
+            motion_level = "low"
+
+        elif motion_score < 20:
+
+            motion_level = "medium"
+
+        else:
+
             motion_level = "high"
 
-        evidence.append(
-            {
-                "id": scene_id,
-                "start": start,
-                "end": end,
-                "duration": round(
-                    duration,
-                    6
-                ),
-                "frames": saved_frames,
-                "motion_score": round(
-                    average_motion,
-                    4
-                ),
-                "motion_level": motion_level
-            }
-        )
+        evidence.append({
 
-        print(
-            f"    {scene_id}: "
-            f"motion={motion_level} "
-            f"({average_motion:.2f})"
-        )
+            "id": scene["id"],
+
+            "duration": duration,
+
+            "motion_score": motion_score,
+
+            "motion_level": motion_level,
+
+            "frames": saved_frames
+        })
 
     cap.release()
 
@@ -490,38 +451,43 @@ def extract_scene_evidence(
 
 
 # ============================================================
-# GEMINI FILE UPLOAD
+# GEMINI VIDEO UPLOAD
 # ============================================================
 
 def upload_video_to_gemini(
     video_path: str
 ):
 
-    """
-    Upload the reference video using the Gemini Files API.
-    """
-
     print(
-        "\n[4/5] Uploading video to Gemini..."
+        "\nUploading video to Gemini..."
     )
 
-    uploaded_file = client.files.upload(
-        file=video_path
+    mime_type = (
+        mimetypes.guess_type(
+            video_path
+        )[0]
+        or "video/mp4"
+    )
+
+    file_info = (
+        gemini_client.files.upload(
+            file=video_path,
+            config=types.UploadFileConfig(
+                mime_type=mime_type
+            )
+        )
     )
 
     print(
-        f"    Uploaded: "
-        f"{uploaded_file.name}"
-    )
-
-    print(
-        "    Waiting for Gemini to process video..."
+        f"Uploaded: {file_info.name}"
     )
 
     while True:
 
-        file_info = client.files.get(
-            name=uploaded_file.name
+        file_info = (
+            gemini_client.files.get(
+                name=file_info.name
+            )
         )
 
         state = getattr(
@@ -540,10 +506,15 @@ def upload_video_to_gemini(
             else None
         )
 
+        print(
+            f"Gemini video state: "
+            f"{state_name}"
+        )
+
         if state_name == "ACTIVE":
 
             print(
-                "    Video is ready."
+                "Gemini video is ready."
             )
 
             return file_info
@@ -554,14 +525,9 @@ def upload_video_to_gemini(
         }:
 
             raise RuntimeError(
-                f"Gemini video processing failed: "
-                f"{state_name}"
+                f"Gemini video processing "
+                f"failed: {state_name}"
             )
-
-        print(
-            f"    Current state: "
-            f"{state_name}"
-        )
 
         time.sleep(5)
 
@@ -576,14 +542,6 @@ def build_gemini_prompt(
     evidence: list[dict[str, Any]]
 ) -> str:
 
-    """
-    Construct the semantic-analysis prompt.
-
-    IMPORTANT:
-    We give Gemini the deterministic scene boundaries.
-    Gemini interprets what happens inside them.
-    """
-
     scene_information = []
 
     for scene, ev in zip(
@@ -591,59 +549,60 @@ def build_gemini_prompt(
         evidence
     ):
 
-        scene_information.append(
-            {
-                "id": scene["id"],
-                "start": scene["start"],
-                "end": scene["end"],
-                "duration": ev["duration"],
-                "opencv_motion_score": ev[
-                    "motion_score"
-                ],
-                "opencv_motion_level": ev[
-                    "motion_level"
-                ]
-            }
-        )
+        scene_information.append({
+
+            "id": scene["id"],
+
+            "start": scene["start"],
+
+            "end": scene["end"],
+
+            "duration": ev["duration"],
+
+            "visual_change_score":
+                ev["motion_score"],
+
+            "visual_change_level":
+                ev["motion_level"]
+        })
 
     return f"""
-You are an expert professional video editor and video-analysis system.
+You are a professional video analysis system.
 
-Analyze the supplied reference video.
+Analyze the supplied REFERENCE VIDEO.
 
-Your task is to reverse-engineer the editing structure of the video.
+Your job is to understand the visual and editing
+characteristics of every predefined segment.
 
 IMPORTANT:
 
-The shot boundaries have already been detected by PySceneDetect.
+The segments have already been detected by
+PySceneDetect.
 
-You MUST preserve those exact segment IDs and timestamps.
-
-Do NOT create new segments.
+Do NOT create segments.
 
 Do NOT merge segments.
 
-Do NOT change segment start timestamps.
+Do NOT change their timestamps.
 
-Do NOT change segment end timestamps.
-
-Your job is to semantically analyze what happens inside each
-predefined segment.
+Use the supplied video as the primary source
+of truth.
 
 For every segment determine:
 
-1. Shot type
-2. Camera movement
-3. Subject movement
-4. Motion intensity
-5. Playback speed
-6. Visible editing effects
-7. Crop/reframing
-8. Concise description
+1. shot type
+2. camera movement
+3. subject movement
+4. motion intensity
+5. playback speed
+6. visible editing effects
+7. crop/reframing
+8. concise visual description
 
-Also identify the transition type between consecutive segments.
+Also determine the transition between
+consecutive segments.
 
-Possible transition types include:
+Possible transitions:
 
 - hard_cut
 - crossfade
@@ -653,7 +612,7 @@ Possible transition types include:
 - dip_to_black
 - unknown
 
-For camera movement use descriptions such as:
+Possible camera movement:
 
 - static
 - pan
@@ -665,70 +624,46 @@ For camera movement use descriptions such as:
 - orbit
 - unknown
 
-For speed use:
+Possible speed:
 
 - normal
 - slow_motion
 - fast_motion
 - unknown
 
-For editing effects, describe only effects that are visually
-supported by the video.
-
 Do not hallucinate effects.
 
-----------------------------------------
-VIDEO METADATA
-----------------------------------------
+Technical metadata:
 
 {json.dumps(
     metadata,
     indent=2
 )}
 
-----------------------------------------
-DETECTED SEGMENTS
-----------------------------------------
+Detected segments:
 
 {json.dumps(
     scene_information,
     indent=2
 )}
 
-----------------------------------------
-ANALYSIS RULE
-----------------------------------------
-
-Use the actual supplied video as the primary source of truth
-for visual interpretation.
-
-Use the OpenCV evidence as supporting evidence.
-
-Use PySceneDetect timestamps as the authoritative segment
-boundaries.
-
-Return the structured analysis only.
+Return ONLY the structured analysis.
 """
 
 
 # ============================================================
-# GEMINI ANALYSIS
+# GEMINI REFERENCE ANALYSIS
 # ============================================================
 
-def analyze_with_gemini(
+def analyze_reference_with_gemini(
     video_file,
-    metadata: dict[str, Any],
-    scenes: list[dict[str, Any]],
-    evidence: list[dict[str, Any]]
+    metadata,
+    scenes,
+    evidence
 ) -> ReferenceAnalysis:
 
-    """
-    Ask Gemini to semantically analyze the reference video.
-    """
-
     print(
-        "\n[5/5] Asking Gemini to analyze "
-        "the reference video..."
+        "\nAnalyzing reference with Gemini..."
     )
 
     prompt = build_gemini_prompt(
@@ -737,22 +672,30 @@ def analyze_with_gemini(
         evidence
     )
 
-    response = client.models.generate_content(
+    response = (
+        gemini_client
+        .models
+        .generate_content(
 
-        model=MODEL,
+            model=GEMINI_MODEL,
 
-        contents=[
-            prompt,
-            video_file
-        ],
+            contents=[
+                video_file,
+                prompt
+            ],
 
-        config=types.GenerateContentConfig(
+            config=types.GenerateContentConfig(
 
-            response_mime_type="application/json",
+                response_mime_type=(
+                    "application/json"
+                ),
 
-            response_schema=ReferenceAnalysis,
+                response_schema=(
+                    ReferenceAnalysis
+                ),
 
-            temperature=0.1
+                temperature=0.1
+            )
         )
     )
 
@@ -762,419 +705,490 @@ def analyze_with_gemini(
             "Gemini returned an empty response."
         )
 
-    print(
-        "    Gemini response received."
-    )
-
     try:
 
-        analysis = ReferenceAnalysis.model_validate_json(
-            response.text
+        analysis = (
+            ReferenceAnalysis
+            .model_validate_json(
+                response.text
+            )
         )
 
     except ValidationError as e:
 
         raise RuntimeError(
-            "Gemini returned JSON that could not "
-            "be validated against ReferenceAnalysis.\n\n"
+            "Gemini returned invalid "
+            "ReferenceAnalysis JSON.\n\n"
             f"{e}\n\n"
-            f"Raw response:\n{response.text}"
+            f"Raw response:\n"
+            f"{response.text}"
         )
 
     return analysis
 
 
 # ============================================================
-# DETERMINISTIC VALIDATION
+# TARGET ANALYSIS
 # ============================================================
 
-def validate_analysis(
-    analysis: ReferenceAnalysis,
-    scenes: list[dict[str, Any]],
-    video_duration: float
-) -> None:
-
-    """
-    Validate Gemini's output against deterministic
-    FFprobe and PySceneDetect information.
-    """
-
-    print(
-        "\nValidating Gemini analysis..."
-    )
-
-    # --------------------------------------------------------
-    # Video duration
-    # --------------------------------------------------------
-
-    if analysis.video_duration < 0:
-
-        raise ValueError(
-            "Gemini returned a negative video duration."
-        )
-
-    if (
-        analysis.video_duration
-        > video_duration + 0.5
-    ):
-
-        raise ValueError(
-            "Gemini returned a video duration "
-            "greater than the actual video duration."
-        )
-
-    # --------------------------------------------------------
-    # Segment count
-    # --------------------------------------------------------
-
-    if len(analysis.segments) != len(scenes):
-
-        raise ValueError(
-            "Gemini returned "
-            f"{len(analysis.segments)} segments, "
-            f"but PySceneDetect detected "
-            f"{len(scenes)}."
-        )
-
-    # --------------------------------------------------------
-    # Segment validation
-    # --------------------------------------------------------
-
-    for expected, actual in zip(
-        scenes,
-        analysis.segments
-    ):
-
-        expected_id = expected["id"]
-
-        # ID
-
-        if actual.id != expected_id:
-
-            raise ValueError(
-                f"Segment ID mismatch. "
-                f"Expected {expected_id}, "
-                f"received {actual.id}."
-            )
-
-        # Start
-
-        if actual.start < 0:
-
-            raise ValueError(
-                f"{actual.id}: "
-                "start timestamp cannot be negative."
-            )
-
-        # End
-
-        if actual.end <= actual.start:
-
-            raise ValueError(
-                f"{actual.id}: "
-                "end timestamp must be greater "
-                "than start timestamp."
-            )
-
-        # Duration boundary
-
-        if actual.end > video_duration + 0.5:
-
-            raise ValueError(
-                f"{actual.id}: "
-                "end timestamp exceeds "
-                "video duration."
-            )
-
-        # Compare with PySceneDetect
-
-        start_difference = abs(
-            actual.start
-            - expected["start"]
-        )
-
-        end_difference = abs(
-            actual.end
-            - expected["end"]
-        )
-
-        if start_difference > 0.01:
-
-            raise ValueError(
-                f"{actual.id}: Gemini changed "
-                f"the start timestamp.\n"
-                f"Expected: {expected['start']}\n"
-                f"Received: {actual.start}"
-            )
-
-        if end_difference > 0.01:
-
-            raise ValueError(
-                f"{actual.id}: Gemini changed "
-                f"the end timestamp.\n"
-                f"Expected: {expected['end']}\n"
-                f"Received: {actual.end}"
-            )
-
-    # --------------------------------------------------------
-    # Chronological ordering
-    # --------------------------------------------------------
-
-    for previous, current in zip(
-        analysis.segments,
-        analysis.segments[1:]
-    ):
-
-        if current.start < previous.end - 0.01:
-
-            raise ValueError(
-                f"Segments overlap: "
-                f"{previous.id} → {current.id}"
-            )
-
-    # --------------------------------------------------------
-    # Transition validation
-    # --------------------------------------------------------
-
-    for transition in analysis.transitions:
-
-        if transition.timestamp < 0:
-
-            raise ValueError(
-                "Transition timestamp cannot be negative."
-            )
-
-        if (
-            transition.timestamp
-            > video_duration
-        ):
-
-            raise ValueError(
-                "Transition timestamp exceeds "
-                "video duration."
-            )
-
-    print(
-        "    Validation successful."
-    )
-
-
-# ============================================================
-# SAVE JSON
-# ============================================================
-
-def save_json(
-    data: Any,
-    output_path: Path
-) -> None:
-
-    """
-    Save JSON with readable formatting.
-    """
-
-    ensure_directory(
-        output_path.parent
-    )
-
-    with open(
-        output_path,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            data,
-            f,
-            indent=2,
-            ensure_ascii=False
-        )
-
-
-# ============================================================
-# MAIN PIPELINE
-# ============================================================
-
-def analyze_reference_video(
+def analyze_target(
     video_path: str,
-    output_dir: str = "output"
-) -> ReferenceAnalysis:
-
-    """
-    Complete reference-video analysis pipeline.
-
-    Pipeline:
-
-    Video
-       ↓
-    FFprobe
-       ↓
-    PySceneDetect
-       ↓
-    OpenCV
-       ↓
-    Gemini
-       ↓
-    Pydantic
-       ↓
-    Deterministic validation
-       ↓
-    reference_analysis.json
-    """
-
-    video_path = str(
-        Path(video_path)
-    )
-
-    output_path = Path(
-        output_dir
-    )
-
-    ensure_directory(
-        output_path
-    )
-
-    # --------------------------------------------------------
-    # Check video
-    # --------------------------------------------------------
-
-    if not Path(video_path).exists():
-
-        raise FileNotFoundError(
-            f"Video not found: {video_path}"
-        )
+    output_dir: str
+) -> TargetAnalysis:
 
     print(
-        "\n=========================================="
+        "\nAnalyzing target video..."
     )
-
-    print(
-        "   REFERENCE VIDEO ANALYSIS"
-    )
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        f"\nVideo: {video_path}"
-    )
-
-    # --------------------------------------------------------
-    # STEP 1 — FFprobe
-    # --------------------------------------------------------
 
     metadata = get_video_metadata(
         video_path
     )
 
-    save_json(
-        metadata,
-        output_path / "metadata.json"
-    )
-
-    # --------------------------------------------------------
-    # STEP 2 — PySceneDetect
-    # --------------------------------------------------------
-
     scenes = detect_scenes(
         video_path
     )
 
-    save_json(
-        {
-            "segments": scenes
-        },
-        output_path / "scenes.json"
+    evidence = extract_opencv_evidence(
+        video_path,
+        scenes,
+        os.path.join(
+            output_dir,
+            "target_frames"
+        )
     )
 
-    # --------------------------------------------------------
-    # STEP 3 — OpenCV
-    # --------------------------------------------------------
+    return TargetAnalysis(
+        video_duration=metadata[
+            "duration"
+        ],
 
-    evidence = extract_scene_evidence(
-        video_path=video_path,
-        scenes=scenes,
-        output_dir=output_path,
-        fps=metadata["fps"]
+        segments=[
+            {
+                "id": scene["id"],
+                "start": scene["start"],
+                "end": scene["end"],
+                "duration": scene["duration"],
+                "motion_score": ev[
+                    "motion_score"
+                ],
+                "motion_level": ev[
+                    "motion_level"
+                ]
+            }
+
+            for scene, ev in zip(
+                scenes,
+                evidence
+            )
+        ]
     )
-
-    save_json(
-        {
-            "segments": evidence
-        },
-        output_path / "analysis_evidence.json"
-    )
-
-    # --------------------------------------------------------
-    # STEP 4 — Gemini upload
-    # --------------------------------------------------------
-
-    video_file = upload_video_to_gemini(
-        video_path
-    )
-
-    # --------------------------------------------------------
-    # STEP 5 — Gemini semantic analysis
-    # --------------------------------------------------------
-
-    analysis = analyze_with_gemini(
-        video_file=video_file,
-        metadata=metadata,
-        scenes=scenes,
-        evidence=evidence
-    )
-
-    # --------------------------------------------------------
-    # STEP 6 — Deterministic validation
-    # --------------------------------------------------------
-
-    validate_analysis(
-        analysis=analysis,
-        scenes=scenes,
-        video_duration=metadata["duration"]
-    )
-
-    # --------------------------------------------------------
-    # STEP 7 — Save final JSON
-    # --------------------------------------------------------
-
-    final_path = (
-        output_path
-        / "reference_analysis.json"
-    )
-
-    save_json(
-        analysis.model_dump(),
-        final_path
-    )
-
-    print(
-        "\n=========================================="
-    )
-
-    print(
-        "   ANALYSIS COMPLETE"
-    )
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        f"\nSaved:"
-        f"\n{final_path}"
-    )
-
-    return analysis
 
 
 # ============================================================
-# COMMAND LINE ENTRY POINT
+# LLAMA PROMPT
+# ============================================================
+
+def build_llama_prompt(
+    reference_analysis: ReferenceAnalysis,
+    target_analysis: TargetAnalysis
+) -> str:
+
+    return f"""
+You are an expert video editing planner.
+
+You are NOT a video-understanding model.
+
+Do not attempt to infer visual information
+that is not present in the supplied analyses.
+
+Your job is to transform the REFERENCE VIDEO'S
+editing style into a deterministic EditSpec
+for the TARGET VIDEO.
+
+REFERENCE ANALYSIS:
+
+{reference_analysis.model_dump_json(
+    indent=2
+)}
+
+TARGET ANALYSIS:
+
+{target_analysis.model_dump_json(
+    indent=2
+)}
+
+Determine:
+
+1. Which target segments correspond to
+   reference segments.
+
+2. What editing operations should be
+   applied to the target.
+
+3. The exact target segment on which
+   each operation should operate.
+
+4. Operation parameters.
+
+Possible operations include:
+
+- trim
+- speed
+- crop
+- resize
+- zoom
+- fade
+- crossfade
+- transition
+- reverse
+- volume
+
+IMPORTANT:
+
+Do not generate Python code.
+
+Do not generate MoviePy code.
+
+Do not generate FFmpeg commands.
+
+Return ONLY an EditSpec-compatible JSON object.
+
+Every operation must reference an
+existing target segment.
+
+Do not invent target segment IDs.
+
+Keep the EditSpec deterministic.
+"""
+
+
+# ============================================================
+# LLAMA EDITSPEC GENERATION
+# ============================================================
+
+def generate_editspec_with_llama(
+    reference_analysis: ReferenceAnalysis,
+    target_analysis: TargetAnalysis
+) -> EditSpec:
+
+    print(
+        "\nGenerating EditSpec with "
+        "Llama-3.1-8B-Instruct..."
+    )
+
+    prompt = build_llama_prompt(
+        reference_analysis,
+        target_analysis
+    )
+
+    response = requests.post(
+
+        f"{OLLAMA_URL}/api/generate",
+
+        json={
+
+            "model": LLAMA_MODEL,
+
+            "prompt": prompt,
+
+            "stream": False,
+
+            "format": "json",
+
+            "options": {
+                "temperature": 0.1
+            }
+        },
+
+        timeout=300
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    raw_text = data.get(
+        "response"
+    )
+
+    if not raw_text:
+
+        raise RuntimeError(
+            "Llama returned an empty response."
+        )
+
+    try:
+
+        editspec = (
+            EditSpec
+            .model_validate_json(
+                raw_text
+            )
+        )
+
+    except ValidationError as e:
+
+        raise RuntimeError(
+            "Llama returned an invalid "
+            "EditSpec.\n\n"
+            f"{e}\n\n"
+            f"Raw response:\n"
+            f"{raw_text}"
+        )
+
+    return editspec
+
+
+# ============================================================
+# EDITSPEC VALIDATION
+# ============================================================
+
+def validate_editspec(
+    editspec: EditSpec,
+    target_analysis: TargetAnalysis
+) -> None:
+
+    print(
+        "\nValidating EditSpec..."
+    )
+
+    target_ids = {
+        segment["id"]
+        for segment
+        in target_analysis.segments
+    }
+
+    for operation in editspec.operations:
+
+        if (
+            operation.target_segment
+            not in target_ids
+        ):
+
+            raise ValueError(
+                "EditSpec references "
+                f"unknown target segment: "
+                f"{operation.target_segment}"
+            )
+
+    print(
+        "EditSpec validation passed."
+    )
+
+
+# ============================================================
+# COMPLETE ANALYSIS PIPELINE
+# ============================================================
+
+def analyze_videos(
+    reference_path: str,
+    target_path: str,
+    output_dir: str
+):
+
+    output_dir = Path(
+        output_dir
+    )
+
+    ensure_directory(
+        output_dir
+    )
+
+    # --------------------------------------------------------
+    # REFERENCE
+    # --------------------------------------------------------
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "REFERENCE VIDEO"
+    )
+
+    print(
+        "========================================"
+    )
+
+    reference_metadata = (
+        get_video_metadata(
+            reference_path
+        )
+    )
+
+    reference_scenes = (
+        detect_scenes(
+            reference_path
+        )
+    )
+
+    reference_evidence = (
+        extract_opencv_evidence(
+
+            reference_path,
+
+            reference_scenes,
+
+            str(
+                output_dir
+                / "reference_frames"
+            )
+        )
+    )
+
+    reference_video = (
+        upload_video_to_gemini(
+            reference_path
+        )
+    )
+
+    reference_analysis = (
+        analyze_reference_with_gemini(
+
+            reference_video,
+
+            reference_metadata,
+
+            reference_scenes,
+
+            reference_evidence
+        )
+    )
+
+    # --------------------------------------------------------
+    # SAVE REFERENCE ANALYSIS
+    # --------------------------------------------------------
+
+    reference_json = (
+        output_dir
+        / "reference_analysis.json"
+    )
+
+    reference_json.write_text(
+
+        reference_analysis
+        .model_dump_json(indent=2),
+
+        encoding="utf-8"
+    )
+
+    print(
+        f"\nSaved: {reference_json}"
+    )
+
+    # --------------------------------------------------------
+    # TARGET
+    # --------------------------------------------------------
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "TARGET VIDEO"
+    )
+
+    print(
+        "========================================"
+    )
+
+    target_analysis = analyze_target(
+
+        target_path,
+
+        str(output_dir)
+    )
+
+    target_json = (
+        output_dir
+        / "target_analysis.json"
+    )
+
+    target_json.write_text(
+
+        target_analysis
+        .model_dump_json(indent=2),
+
+        encoding="utf-8"
+    )
+
+    print(
+        f"Saved: {target_json}"
+    )
+
+    # --------------------------------------------------------
+    # LLAMA
+    # --------------------------------------------------------
+
+    editspec = (
+        generate_editspec_with_llama(
+
+            reference_analysis,
+
+            target_analysis
+        )
+    )
+
+    # --------------------------------------------------------
+    # VALIDATE
+    # --------------------------------------------------------
+
+    validate_editspec(
+        editspec,
+        target_analysis
+    )
+
+    # --------------------------------------------------------
+    # SAVE EDITSPEC
+    # --------------------------------------------------------
+
+    editspec_json = (
+        output_dir
+        / "editspec.json"
+    )
+
+    editspec_json.write_text(
+
+        editspec
+        .model_dump_json(indent=2),
+
+        encoding="utf-8"
+    )
+
+    print(
+        f"\nSaved: {editspec_json}"
+    )
+
+    return {
+
+        "reference_analysis":
+            reference_analysis,
+
+        "target_analysis":
+            target_analysis,
+
+        "editspec":
+            editspec
+    }
+
+
+# ============================================================
+# MAIN
 # ============================================================
 
 if __name__ == "__main__":
 
-    analyze_reference_video(
-        video_path="data/reference.mp4",
-        output_dir="output"
+    analyze_videos(
+
+        reference_path=(
+            "data/reference.mp4"
+        ),
+
+        target_path=(
+            "data/target.mp4"
+        ),
+
+        output_dir=(
+            "output"
+        )
     )
