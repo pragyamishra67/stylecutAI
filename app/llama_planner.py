@@ -56,6 +56,7 @@ class QwenEditPlanner:
             "[QWEN] Inference client initialized."
         )
 
+
     # ========================================================
     # GENERATE EDIT SPEC
     # ========================================================
@@ -96,7 +97,7 @@ video as closely as possible.
 You are NOT editing the video yourself.
 
 You are producing an EditSpec that another program will
-execute using FFmpeg.
+execute using MoviePy.
 
 You must use ONLY the information provided in the
 REFERENCE ANALYSIS and TARGET ANALYSIS.
@@ -133,7 +134,6 @@ RULES
 3. Preserve the target video's actual visual content.
 
 4. Match the reference video's:
-
    - pacing
    - shot duration
    - cut frequency
@@ -163,6 +163,18 @@ RULES
     footage appears in the final output.
 
 12. Keep the EditSpec internally consistent.
+
+13. The final video MUST use the audio from
+    data/reference.mp4, not the target video's audio.
+
+14. Do not loop or extend the reference audio.
+
+15. All segments MUST form one contiguous output timeline.
+    The first target_start must be 0.0, and each segment's
+    target_start must equal the previous segment's target_end.
+
+16. The final target_end should approximately match the
+    reference video's duration.
 
 ============================================================
 SUPPORTED OPERATIONS
@@ -203,6 +215,8 @@ The JSON must follow this exact structure:
     "version": "1.0",
 
     "source_video": "data/target.mp4",
+
+    "reference_video": "data/reference.mp4",
 
     "output_video": "outputs/edited.mp4",
 
@@ -370,6 +384,7 @@ The final answer MUST be a single valid JSON object.
 
         return validated.model_dump()
 
+
     # ========================================================
     # CONVERT INPUT TO DICTIONARY
     # ========================================================
@@ -407,6 +422,7 @@ The final answer MUST be a single valid JSON object.
             "Analysis data must be either a dictionary "
             "or a Pydantic BaseModel."
         )
+
 
     # ========================================================
     # EXTRACT JSON FROM QWEN RESPONSE

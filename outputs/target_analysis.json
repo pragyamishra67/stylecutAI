@@ -18,8 +18,8 @@
       "duration": 18.266667,
       "shot_type": "close-up",
       "camera_motion": "static",
-      "subject_motion": "smiling and posing",
-      "description": "Close-up of a freckled woman smiling, transitioning to a woman with yellow makeup posing against a yellow background.",
+      "subject_motion": "subtle facial movements",
+      "description": "Close-up of a freckled young woman smiling and looking at the camera against a white background.",
       "motion_score": 11.878
     },
     {
@@ -28,9 +28,9 @@
       "end_time": 27.7,
       "duration": 9.433333,
       "shot_type": "close-up",
-      "camera_motion": "dynamic",
-      "subject_motion": "posing and gesturing",
-      "description": "A woman with glasses poses and sticks her tongue out, followed by a rapid camera transition to a woman in traditional dress.",
+      "camera_motion": "static",
+      "subject_motion": "subtle head tilt",
+      "description": "Close-up of a woman with yellow eyeshadow and hoop earrings posing against a yellow background.",
       "motion_score": 8.181
     }
   ]

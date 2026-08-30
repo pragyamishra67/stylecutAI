@@ -152,6 +152,8 @@ class EditSpec(BaseModel):
 
     source_video: str
 
+    reference_video: str
+
     output_video: str
 
     reference_style_summary: str
