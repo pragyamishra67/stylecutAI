@@ -2,7 +2,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Union
 
 from dotenv import load_dotenv
 from google import genai
@@ -160,6 +160,7 @@ def generate_json(
 
 def analyze_reference_video(
     video_path: str,
+    workspace_dir: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """
     Analyze reference.mp4.
@@ -245,8 +246,10 @@ def analyze_reference_video(
         "[REFERENCE] Running OpenCV analysis..."
     )
 
-    workspace = Path(
-        "workspace/reference_frames"
+    workspace = (
+        Path(workspace_dir) / "reference_frames"
+        if workspace_dir is not None
+        else Path("workspace/reference_frames")
     )
 
     for segment in segments:
@@ -496,6 +499,7 @@ Return ONLY valid JSON.
 def analyze_target_video(
     video_path: str,
     reference_video_path: str,
+    workspace_dir: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """
     Analyze target.mp4.
@@ -602,8 +606,10 @@ def analyze_target_video(
         "[TARGET] Running OpenCV analysis..."
     )
 
-    target_frame_dir = Path(
-        "workspace/target_frames"
+    target_frame_dir = (
+        Path(workspace_dir) / "target_frames"
+        if workspace_dir is not None
+        else Path("workspace/target_frames")
     )
 
     for segment in segments:
@@ -657,8 +663,10 @@ def analyze_target_video(
         reference_video_path
     )
 
-    reference_frame_dir = Path(
-        "workspace/reference_frames_for_target"
+    reference_frame_dir = (
+        Path(workspace_dir) / "reference_frames_for_target"
+        if workspace_dir is not None
+        else Path("workspace/reference_frames_for_target")
     )
 
     reference_frames = []

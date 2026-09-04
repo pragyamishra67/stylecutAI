@@ -139,7 +139,7 @@ class EditSegment(BaseModel):
         default_factory=list
     )
 
-    rationale: str
+    rationale: Optional[str] = None
 
 
 # ============================================================

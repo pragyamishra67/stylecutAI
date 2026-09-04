@@ -8,6 +8,7 @@ from moviepy import (
 )
 
 from .schemas import EditSpec
+from .video_utils import ffprobe_metadata
 
 
 # ============================================================
@@ -148,6 +149,49 @@ def execute_editspec(
     )
 
     # ========================================================
+    # REFERENCE VIDEO MASTER TIMELINE
+    # ========================================================
+
+    ref_metadata = ffprobe_metadata(
+        str(reference_video)
+    )
+
+    reference_fps = ref_metadata.get(
+        "fps"
+    )
+
+    reference_frame_count = ref_metadata.get(
+        "frame_count"
+    )
+
+    reference_duration = (
+        reference_frame_count / reference_fps
+        if reference_fps and reference_frame_count
+        else float(
+            ref_metadata.get("duration")
+            or ref_metadata.get("duration_seconds", 0.0)
+        )
+    )
+
+    print(
+        f"[EDITOR] Reference master timeline: "
+        f"FPS={reference_fps}, "
+        f"Frames={reference_frame_count}, "
+        f"Duration={reference_duration:.6f}s"
+    )
+
+    # Reference FPS takes precedence as authoritative output FPS
+    output_fps = (
+        reference_fps
+        if reference_fps
+        else (
+            target_clip.fps
+            if target_clip.fps
+            else 30.0
+        )
+    )
+
+    # ========================================================
     # PROCESS SEGMENTS
     # ========================================================
 
@@ -260,9 +304,122 @@ def execute_editspec(
         )
 
         print(
-            f"[EDITOR] Final video duration: "
-            f"{final_video.duration:.3f}s"
+            f"[EDITOR] Final video duration before timeline enforcement: "
+            f"{final_video.duration:.6f}s"
         )
+
+        # ====================================================
+        # ENFORCE EXACT REFERENCE MASTER TIMELINE & FRAME COUNT
+        # ====================================================
+
+        if reference_frame_count and output_fps:
+
+            exact_duration = (
+                reference_frame_count / output_fps
+            )
+
+            print(
+                f"[EDITOR] Enforcing reference master timeline: "
+                f"{reference_frame_count} frames @ {output_fps} fps -> {exact_duration:.6f}s"
+            )
+
+            if final_video.duration > exact_duration:
+
+                print(
+                    f"[EDITOR] Final video ({final_video.duration:.6f}s) is longer "
+                    f"than reference timeline ({exact_duration:.6f}s). "
+                    f"Trimming to exact reference timeline."
+                )
+
+                final_video = final_video.subclipped(
+                    0,
+                    exact_duration,
+                )
+
+            elif final_video.duration < exact_duration:
+
+                deficit = (
+                    exact_duration - final_video.duration
+                )
+
+                print(
+                    f"[EDITOR] Final video ({final_video.duration:.6f}s) is shorter "
+                    f"than reference timeline ({exact_duration:.6f}s) by {deficit:.6f}s."
+                )
+
+                # Reach exact reference frame count using existing target footage
+                if edited_segments and len(spec.segments) > 0:
+
+                    last_seg = spec.segments[-1]
+                    needed_source = deficit
+
+                    for op in last_seg.operations:
+                        if op.operation == "speed":
+                            factor = float(
+                                op.parameters.get("factor", 1.0)
+                            )
+                            needed_source = deficit * factor
+
+                    if last_seg.source_end + needed_source <= target_clip.duration:
+
+                        print(
+                            f"[EDITOR] Extending final segment from target video to reach "
+                            f"exact reference timeline..."
+                        )
+
+                        extra_subclip = target_clip.subclipped(
+                            last_seg.source_end,
+                            last_seg.source_end + needed_source,
+                        )
+
+                        extra_ops = [
+                            op for op in last_seg.operations
+                            if op.operation != "trim"
+                        ]
+
+                        extra_subclip = _apply_operations(
+                            extra_subclip,
+                            extra_ops,
+                        )
+
+                        edited_segments.append(
+                            extra_subclip
+                        )
+
+                        final_video = concatenate_videoclips(
+                            edited_segments,
+                            method="compose",
+                        )
+
+                        final_video = final_video.subclipped(
+                            0,
+                            exact_duration,
+                        )
+
+                    else:
+
+                        error_msg = (
+                            f"[EDITOR] ERROR: Output frame count does not match reference.\n"
+                            f"Generated edit ({final_video.duration:.6f}s) is shorter than reference "
+                            f"timeline ({exact_duration:.6f}s) and insufficient target footage remains."
+                        )
+                        print(error_msg)
+                        raise ValueError(error_msg)
+
+                else:
+
+                    error_msg = (
+                        f"[EDITOR] ERROR: Output frame count does not match reference.\n"
+                        f"Generated edit ({final_video.duration:.6f}s) is shorter than reference "
+                        f"timeline ({exact_duration:.6f}s)."
+                    )
+                    print(error_msg)
+                    raise ValueError(error_msg)
+
+            # Prevent float underflow during MoviePy frame iteration
+            final_video = final_video.with_duration(
+                (reference_frame_count + 1e-5) / output_fps
+            )
 
         # ====================================================
         # LOAD REFERENCE AUDIO
@@ -291,7 +448,7 @@ def execute_editspec(
         # ====================================================
 
         print(
-            f"\n[EDITOR] Rendering final video:"
+            f"\n[EDITOR] Rendering final video at {output_fps} FPS:"
             f"\n          {output_path}"
         )
 
@@ -305,15 +462,72 @@ def execute_editspec(
 
             preset="medium",
 
-            fps=(
-                target_clip.fps
-                if target_clip.fps
-                else 30
-            ),
+            fps=output_fps,
 
             threads=4,
 
             logger="bar",
+        )
+
+        # ====================================================
+        # FINAL VALIDATION (EXACT FPS & FRAME COUNT)
+        # ====================================================
+
+        print(
+            "\n[EDITOR] Running final FFprobe validation on rendered output..."
+        )
+
+        out_meta = ffprobe_metadata(
+            str(output_path)
+        )
+
+        out_fps = out_meta.get("fps")
+        out_frame_count = out_meta.get("frame_count")
+        out_duration = float(
+            out_meta.get("duration")
+            or out_meta.get("duration_seconds", 0.0)
+        )
+
+        print(
+            f"[EDITOR] Reference master timeline: "
+            f"FPS={reference_fps}, "
+            f"Frames={reference_frame_count}, "
+            f"Duration={reference_duration:.6f}s"
+        )
+        print(
+            f"[EDITOR] Rendered output video:     "
+            f"FPS={out_fps}, "
+            f"Frames={out_frame_count}, "
+            f"Duration={out_duration:.6f}s"
+        )
+
+        # Validate FPS
+        if reference_fps is not None and abs(out_fps - reference_fps) > 0.01:
+
+            error_msg = (
+                f"[EDITOR] ERROR: Output FPS does not match reference.\n"
+                f"Reference: {reference_fps}\n"
+                f"Output: {out_fps}"
+            )
+            print(error_msg)
+            raise ValueError(error_msg)
+
+        # Validate Frame Count (Fail loudly if not exact)
+        if reference_frame_count is not None and out_frame_count != reference_frame_count:
+
+            error_msg = (
+                f"[EDITOR] ERROR: Output frame count does not match reference.\n"
+                f"Reference: {reference_frame_count}\n"
+                f"Output: {out_frame_count}"
+            )
+            print(error_msg)
+            raise ValueError(error_msg)
+
+        print(
+            f"[EDITOR] SUCCESS: Output matches exact reference timeline!\n"
+            f"          FPS: {out_fps} == {reference_fps}\n"
+            f"          Frames: {out_frame_count} == {reference_frame_count}\n"
+            f"          Duration: {out_duration:.6f}s"
         )
 
         print(

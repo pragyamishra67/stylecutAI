@@ -67,10 +67,27 @@ def ffprobe_metadata(video_path: str) -> Dict[str, Any]:
         else 0.0
     )
 
+    raw_frames = stream.get("nb_frames")
+    frame_count = int(raw_frames) if raw_frames and str(raw_frames).isdigit() else 0
+    if frame_count <= 0:
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if cap.isOpened():
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+        except Exception:
+            pass
+
+    duration = float(
+        fmt.get("duration", 0)
+    )
+    if frame_count <= 0 and fps > 0 and duration > 0:
+        frame_count = int(round(duration * fps))
+
     return {
-        "duration_seconds": float(
-            fmt.get("duration", 0)
-        ),
+        "duration_seconds": duration,
+
+        "duration": duration,
 
         "width": int(
             stream.get("width", 0)
@@ -82,9 +99,7 @@ def ffprobe_metadata(video_path: str) -> Dict[str, Any]:
 
         "fps": fps,
 
-        "frame_count": int(
-            stream.get("nb_frames") or 0
-        ),
+        "frame_count": frame_count,
 
         "codec": stream.get("codec_name"),
 
